@@ -1,10 +1,12 @@
 [package]
 edition = "2021"
-name = "movie-replace"
+name = "qrcode"
 version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0.57"
+clap = {version = "3.2.5", features = ["derive"]}
+dhat = "0.3.0"
 opencv = "0.64"
