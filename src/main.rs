@@ -1,7 +1,7 @@
 use anyhow::{Ok, Result};
 use opencv::{
     imgcodecs, imgproc, objdetect,
-    prelude::{QRCodeDetectorTraitConst, QRCodeEncoder},
+    prelude::{MatTraitConst, QRCodeDetectorTraitConst, QRCodeEncoder},
     types::{PtrOfQRCodeEncoder, VectorOfPoint},
 };
 fn main() -> Result<()> {
@@ -52,13 +52,7 @@ fn main() -> Result<()> {
 
     // QRコードの置換
     let mut cover = opencv::core::Mat::roi(&target_img, rect)?;
-    opencv::core::add(
-        &new_qr.clone(),
-        &new_qr,
-        &mut cover,
-        &opencv::core::no_array(),
-        -1,
-    )?;
+    new_qr.copy_to(&mut cover)?;
 
     // 成果物の書き出し
     imgcodecs::imwrite(
