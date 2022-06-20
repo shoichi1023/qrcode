@@ -1,4 +1,8 @@
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    fs::File,
+    io::{BufRead, BufReader},
+};
 
 use anyhow::{Ok, Result};
 use clap::{Parser, Subcommand};
@@ -24,7 +28,8 @@ enum Commands {
         url: String,
         #[clap(short, long, value_parser, default_value_t = 300)]
         size: i32,
-        #[clap(short, long, value_parser, default_value_t = String::from("./qrcode.png"))]
+        /// # is replaced by QR name
+        #[clap(short, long, value_parser, default_value_t = String::from("./#_qrcode.png"))]
         output: String,
     },
     Replace {
@@ -34,7 +39,8 @@ enum Commands {
         url: String,
         #[clap(short, long, value_parser, default_value_t = 15)]
         padding: i32,
-        #[clap(short, long, value_parser, default_value_t = String::from("./replaced.mp4"))]
+        /// # is replaced by QR name
+        #[clap(short, long, value_parser, default_value_t = String::from("./#_replaced.mp4"))]
         output: String,
     },
     ImgReplace {
@@ -44,7 +50,7 @@ enum Commands {
         url: String,
         #[clap(short, long, value_parser, default_value_t = 15)]
         padding: i32,
-        #[clap(short, long, value_parser, default_value_t = String::from("./replaced.png"))]
+        #[clap(short, long, value_parser, default_value_t = String::from("./#_replaced.png"))]
         output: String,
     },
 }
@@ -56,8 +62,14 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Generate { url, size, output } => {
             let qr_size = opencv::core::Size::new(*size, *size);
-            let qr_code = qr_code_generate(url, qr_size)?;
-            imgcodecs::imwrite(&output, &qr_code, &opencv::core::Vector::default())?;
+            let qr_code_list = qr_code_generate(url, qr_size)?;
+            for x in qr_code_list {
+                imgcodecs::imwrite(
+                    &output.replace("#", &x.0),
+                    &x.1,
+                    &opencv::core::Vector::default(),
+                )?;
+            }
         }
         Commands::Replace {
             input,
@@ -80,7 +92,14 @@ fn main() -> Result<()> {
                 std::process::exit(1)
             }
             let replaced = img_qr_code_replace(target_img, url, qr_rect.unwrap())?;
-            imgcodecs::imwrite(&output, &replaced, &opencv::core::Vector::default())?;
+            println!("{}", replaced.len());
+            for x in replaced {
+                imgcodecs::imwrite(
+                    &output.replace("#", &x.0),
+                    &x.1,
+                    &opencv::core::Vector::default(),
+                )?;
+            }
         }
     }
 
@@ -110,8 +129,24 @@ fn video_qr_code_replace(
         video.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32,
     );
     let max_miss_count = fps as i32 / 2;
-    let mut replaced_video = videoio::VideoWriter::new(&output, fourcc, fps, frame_size, true)?;
-
+    let mut replaced_video_list: Vec<videoio::VideoWriter> = Vec::new();
+    let mut name_list: Vec<String> = Vec::new();
+    let f = File::open(url).unwrap();
+    let reader = BufReader::new(f);
+    for line in reader.lines() {
+        let line = line.unwrap().split(",").fold(Vec::new(), |mut s, i| {
+            s.push(i.to_string());
+            s
+        });
+        name_list.push(line[0].clone());
+        replaced_video_list.push(videoio::VideoWriter::new(
+            &output.replace("#", &line[0]),
+            fourcc,
+            fps,
+            frame_size,
+            true,
+        )?)
+    }
     let mut detected_future_frame_rect: VecDeque<opencv::core::Rect> = VecDeque::new();
     for i in 0..frame_count {
         let mut target_img = opencv::core::Mat::default();
@@ -122,9 +157,11 @@ fn video_qr_code_replace(
         } else {
             detected_future_frame_rect.pop_front()
         };
-        let replaced_img = match replace_rect {
-            Some(rect) => img_qr_code_replace(target_img, url, rect)?,
-            None => {
+        let replaced_img_list = match replace_rect {
+            Some(rect) if rect.width > 0 && rect.height > 0 => {
+                img_qr_code_replace(target_img, url, rect)?
+            }
+            _ => {
                 let mut found_rect: Option<opencv::core::Rect> = None;
                 for j in 0..max_miss_count {
                     video.set(videoio::CAP_PROP_POS_FRAMES, (i + j) as f64)?;
@@ -140,12 +177,23 @@ fn video_qr_code_replace(
                 if found_rect.is_some() {
                     img_qr_code_replace(target_img, url, found_rect.unwrap())?
                 } else {
-                    target_img
+                    name_list
+                        .clone()
+                        .into_iter()
+                        .map(|n| (n, target_img.clone()))
+                        .collect()
                 }
             }
         };
 
-        replaced_video.write(&replaced_img)?;
+        let _: Result<()> = replaced_video_list
+            .iter_mut()
+            .zip(replaced_img_list.iter())
+            .map(|x| -> Result<()> {
+                x.0.write(&x.1 .1)?;
+                Ok(())
+            })
+            .collect();
     }
 
     Ok(())
@@ -167,6 +215,13 @@ fn img_qr_code_detect(
 
     // 検出位置の取得
     let top_left_point = result.get(0)?;
+    // println!(
+    //     "{:?}:{:?}:{:?}:{:?}",
+    //     result.get(0),
+    //     result.get(1),
+    //     result.get(2),
+    //     result.get(3),
+    // );
     let bottom_right_point = result.get(2)?;
     let rect = opencv::core::Rect::new(
         top_left_point.x - padding,
@@ -183,31 +238,59 @@ fn img_qr_code_replace(
     input: opencv::core::Mat,
     url: &String,
     rect: opencv::core::Rect,
-) -> Result<opencv::core::Mat> {
+) -> Result<Vec<(String, opencv::core::Mat)>> {
     // QRコードの置換
-    let mut cover = opencv::core::Mat::roi(&input, rect)?;
-    let qr_size = opencv::core::Size::new(rect.width, rect.height);
-    let new_qr = qr_code_generate(url, qr_size)?;
-    new_qr.copy_to(&mut cover)?;
 
-    Ok(input)
+    let qr_size = opencv::core::Size::new(rect.width, rect.height);
+    let new_qr_list = qr_code_generate(url, qr_size)?;
+    let mat_list: Vec<opencv::core::Mat> = new_qr_list
+        .iter()
+        .map(|_| opencv::core::Mat::from(input.clone()))
+        .collect();
+    Ok(mat_list
+        .into_iter()
+        .zip(new_qr_list.into_iter())
+        .map(|x| -> Result<(String, opencv::core::Mat)> {
+            let mut cover = opencv::core::Mat::roi(&x.0, rect)?;
+            x.1 .1.copy_to(&mut cover)?;
+            Ok((x.1 .0, x.0))
+        })
+        .flatten()
+        .collect())
 }
 
 // QRコード生成
-fn qr_code_generate(url: &String, size: opencv::core::Size) -> Result<opencv::core::Mat> {
-    let mut new_qr = opencv::core::Mat::default();
-    let mut qr_code_params = objdetect::QRCodeEncoder_Params::default()?;
-    qr_code_params.version = 4;
-    let mut encoder: PtrOfQRCodeEncoder = <dyn objdetect::QRCodeEncoder>::create(qr_code_params)?;
-    encoder.encode(&url, &mut new_qr)?;
-    imgproc::resize(
-        &new_qr.clone(),
-        &mut new_qr,
-        size,
-        0.0,
-        0.0,
-        imgproc::INTER_AREA,
-    )?;
-    imgproc::cvt_color(&new_qr.clone(), &mut new_qr, imgproc::COLOR_GRAY2BGR, 0)?;
-    Ok(new_qr)
+fn qr_code_generate(
+    url: &String,
+    size: opencv::core::Size,
+) -> Result<Vec<(String, opencv::core::Mat)>> {
+    let mut new_qr_list: Vec<(String, opencv::core::Mat)> = Vec::new();
+    let f = File::open(url).unwrap();
+    let reader = BufReader::new(f);
+    for line in reader.lines() {
+        let line = line.unwrap().split(",").fold(Vec::new(), |mut s, i| {
+            s.push(i.to_string());
+            s
+        });
+        let name = line[0].clone();
+        let qr_url = line[1].clone();
+        let mut new_qr = opencv::core::Mat::default();
+        let mut qr_code_params = objdetect::QRCodeEncoder_Params::default()?;
+        qr_code_params.version = 4;
+        let mut encoder: PtrOfQRCodeEncoder =
+            <dyn objdetect::QRCodeEncoder>::create(qr_code_params)?;
+        encoder.encode(&qr_url, &mut new_qr)?;
+        imgproc::resize(
+            &new_qr.clone(),
+            &mut new_qr,
+            size,
+            0.0,
+            0.0,
+            imgproc::INTER_AREA,
+        )?;
+        imgproc::cvt_color(&new_qr.clone(), &mut new_qr, imgproc::COLOR_GRAY2BGR, 0)?;
+        new_qr_list.push((name, new_qr));
+    }
+
+    Ok(new_qr_list)
 }
