@@ -149,6 +149,9 @@ fn video_qr_code_replace(
             s.push(i.to_string());
             s
         });
+        if line.is_empty() {
+            continue;
+        }
         name_list.push(line[0].clone());
         replaced_video_list.push(videoio::VideoWriter::new(
             &output.replace("#", &line[0]),
@@ -299,6 +302,9 @@ fn qr_code_generate(
             s.push(i.to_string());
             s
         });
+        if line.is_empty() {
+            continue;
+        }
         let name = line[0].clone();
         let qr_url = line[1].clone();
         let mut new_qr = opencv::core::Mat::default();

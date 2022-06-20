@@ -17,3 +17,10 @@ SUBCOMMANDS:
     replace        replace QR Code on video
 
 ```
+
+## getting start
+
+```sh
+brew install opencv
+./qrcode -h
+```
