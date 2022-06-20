@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{Ok, Result};
 use clap::{Parser, Subcommand};
+use indicatif::ProgressBar;
 use opencv::{
     imgcodecs, imgproc, objdetect,
     prelude::{MatTraitConst, QRCodeDetectorTraitConst, QRCodeEncoder},
@@ -56,7 +57,6 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    let start = std::time::Instant::now();
     let cli = Cli::parse();
 
     match &cli.command {
@@ -103,13 +103,6 @@ fn main() -> Result<()> {
         }
     }
 
-    let end = start.elapsed();
-    println!(
-        "実行時間 : {}.{:03} sec",
-        end.as_secs(),
-        end.subsec_nanos() / 1_000_000
-    );
-
     Ok(())
 }
 
@@ -120,6 +113,9 @@ fn video_qr_code_replace(
     padding: i32,
     output: &String,
 ) -> Result<()> {
+    let start = std::time::Instant::now();
+
+    //初期設定
     let mut video = videoio::VideoCapture::from_file(&input, videoio::CAP_ANY)?;
     let fourcc = video.get(videoio::CAP_PROP_FOURCC)? as i32;
     let frame_count = video.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
@@ -129,6 +125,9 @@ fn video_qr_code_replace(
         video.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32,
     );
     let max_miss_count = fps as i32 / 2;
+    let pb = ProgressBar::new(frame_count as u64);
+
+    // ファイル取得
     let mut replaced_video_list: Vec<videoio::VideoWriter> = Vec::new();
     let mut name_list: Vec<String> = Vec::new();
     let f = File::open(url).unwrap();
@@ -148,6 +147,7 @@ fn video_qr_code_replace(
         )?)
     }
     let mut detected_future_frame_rect: VecDeque<opencv::core::Rect> = VecDeque::new();
+    let mut detected_rect: Option<opencv::core::Rect> = None;
     for i in 0..frame_count {
         let mut target_img = opencv::core::Mat::default();
         video.set(videoio::CAP_PROP_POS_FRAMES, i as f64)?;
@@ -158,12 +158,18 @@ fn video_qr_code_replace(
             detected_future_frame_rect.pop_front()
         };
         let replaced_img_list = match replace_rect {
-            Some(rect) if rect.width > 0 && rect.height > 0 => {
-                img_qr_code_replace(target_img, url, rect)?
+            Some(rect) => {
+                if detected_rect.is_none() {
+                    detected_rect = Some(rect)
+                };
+                img_qr_code_replace(target_img, url, detected_rect.unwrap())?
             }
-            _ => {
+            None => {
                 let mut found_rect: Option<opencv::core::Rect> = None;
                 for j in 0..max_miss_count {
+                    if i + j >= frame_count {
+                        break;
+                    }
                     video.set(videoio::CAP_PROP_POS_FRAMES, (i + j) as f64)?;
                     video.read(&mut target_img)?;
                     found_rect = img_qr_code_detect(&target_img, padding)?;
@@ -175,7 +181,10 @@ fn video_qr_code_replace(
                     }
                 }
                 if found_rect.is_some() {
-                    img_qr_code_replace(target_img, url, found_rect.unwrap())?
+                    if detected_rect.is_none() {
+                        detected_rect = found_rect;
+                    };
+                    img_qr_code_replace(target_img, url, detected_rect.unwrap())?
                 } else {
                     name_list
                         .clone()
@@ -194,7 +203,16 @@ fn video_qr_code_replace(
                 Ok(())
             })
             .collect();
+        pb.inc(1);
     }
+
+    let end = start.elapsed();
+    pb.finish_and_clear();
+    println!(
+        "Done ( {}.{:03} sec )",
+        end.as_secs(),
+        end.subsec_nanos() / 1_000_000
+    );
 
     Ok(())
 }
@@ -215,13 +233,6 @@ fn img_qr_code_detect(
 
     // 検出位置の取得
     let top_left_point = result.get(0)?;
-    // println!(
-    //     "{:?}:{:?}:{:?}:{:?}",
-    //     result.get(0),
-    //     result.get(1),
-    //     result.get(2),
-    //     result.get(3),
-    // );
     let bottom_right_point = result.get(2)?;
     let rect = opencv::core::Rect::new(
         top_left_point.x - padding,
@@ -229,6 +240,10 @@ fn img_qr_code_detect(
         bottom_right_point.x - top_left_point.x + padding * 2,
         bottom_right_point.y - top_left_point.y + padding * 2,
     );
+
+    if rect.width < 0 || rect.height < 0 {
+        return Ok(None);
+    }
 
     Ok(Some(rect))
 }

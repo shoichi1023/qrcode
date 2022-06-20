@@ -8,5 +8,5 @@ version = "0.1.0"
 [dependencies]
 anyhow = "1.0.57"
 clap = {version = "3.2.5", features = ["derive"]}
-dhat = "0.3.0"
+indicatif = "0.16.2"
 opencv = "0.64"
