@@ -1,4 +1,4 @@
-# qrcode comand help
+# qrcode
 
 ```sh
 qrcode 0.1.0
