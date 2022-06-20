@@ -24,33 +24,45 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// generate QR Code
     Generate {
+        /// url list csv path like name,url
         #[clap(short, long, value_parser)]
         url: String,
+        /// The size of one side of the image
         #[clap(short, long, value_parser, default_value_t = 300)]
         size: i32,
         /// # is replaced by QR name
         #[clap(short, long, value_parser, default_value_t = String::from("./#_qrcode.png"))]
         output: String,
     },
+    /// replace QR Code on video
     Replace {
+        /// input file path
         #[clap(short, long, value_parser)]
         input: String,
+        /// url list csv path like name,url
         #[clap(short, long, value_parser)]
         url: String,
+        /// QR Code padding.  please increase, If the QR Code is resized in the middle of the video.
         #[clap(short, long, value_parser, default_value_t = 15)]
         padding: i32,
-        /// # is replaced by QR name
+        /// output file path, # is replaced by QR name
         #[clap(short, long, value_parser, default_value_t = String::from("./#_replaced.mp4"))]
         output: String,
     },
+    /// replace QR Code on image
     ImgReplace {
+        /// input file path
         #[clap(short, long, value_parser)]
         input: String,
+        /// url list csv path like name,url
         #[clap(short, long, value_parser)]
         url: String,
+        /// QR Code padding.  please increase, If the old QR Code remains.
         #[clap(short, long, value_parser, default_value_t = 15)]
         padding: i32,
+        /// output file path, # is replaced by QR name
         #[clap(short, long, value_parser, default_value_t = String::from("./#_replaced.png"))]
         output: String,
     },
