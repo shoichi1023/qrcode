@@ -1,12 +1,11 @@
 use std::{
-    collections::VecDeque,
     fs::File,
     io::{BufRead, BufReader},
 };
 
 use anyhow::{Ok, Result};
 use clap::{Parser, Subcommand};
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use opencv::{
     imgcodecs, imgproc, objdetect,
     prelude::{MatTraitConst, QRCodeDetectorTraitConst, QRCodeEncoder},
@@ -89,7 +88,27 @@ fn main() -> Result<()> {
             padding,
             output,
         } => {
-            video_qr_code_replace(input, url, *padding, output)?;
+            let start_time = std::time::Instant::now();
+            let mut video = videoio::VideoCapture::from_file(&input, videoio::CAP_ANY)?;
+            let fps = video.get(videoio::CAP_PROP_FPS)?;
+            let predict_miss_count = fps as i32 / 5;
+            let (rect, start) = video_qr_code_detect(&mut video, *padding, false)?;
+            let (_, end) = video_qr_code_detect(&mut video, *padding, true)?;
+            video_qr_code_replace(
+                &mut video,
+                url,
+                output,
+                rect,
+                start - predict_miss_count,
+                end + predict_miss_count,
+            )?;
+
+            let end_time = start_time.elapsed();
+            println!(
+                "Done ( {}.{:03} sec )",
+                end_time.as_secs(),
+                end_time.subsec_nanos() / 1_000_000
+            );
         }
         Commands::ImgReplace {
             input,
@@ -118,17 +137,69 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// 動画のQRコードを置換するためのwrapper
-fn video_qr_code_replace(
-    input: &String,
-    url: &String,
+// 初めにQRコードが見つかる場所を検知
+fn video_qr_code_detect(
+    video: &mut videoio::VideoCapture,
     padding: i32,
-    output: &String,
-) -> Result<()> {
-    let start = std::time::Instant::now();
+    is_reverse: bool,
+) -> Result<(opencv::core::Rect, i32)> {
+    let pb = ProgressBar::new_spinner();
+    pb.enable_steady_tick(120);
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{prefix:.bold.dim} {spinner} {msg}")
+            .tick_strings(&[
+                "▹▹▹▹▹",
+                "▸▹▹▹▹",
+                "▹▸▹▹▹",
+                "▹▹▸▹▹",
+                "▹▹▹▸▹",
+                "▹▹▹▹▸",
+                "▪▪▪▪▪",
+            ]),
+    );
+    pb.set_prefix(format!("[{}/3]", is_reverse as i32 + 1));
+    pb.set_message(if is_reverse {
+        "QRコードの終了位置を検索しています..."
+    } else {
+        "QRコードの開始位置を検索しています..."
+    });
 
-    //初期設定
-    let mut video = videoio::VideoCapture::from_file(&input, videoio::CAP_ANY)?;
+    let frame_count = video.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
+
+    let mut detect_frame = (opencv::core::Rect::default(), 0);
+    for i in 0..frame_count {
+        let mut frame_img = opencv::core::Mat::default();
+        let frame_num = if is_reverse {
+            (frame_count - 1 - i) as f64
+        } else {
+            i as f64
+        };
+        video.set(videoio::CAP_PROP_POS_FRAMES, frame_num)?;
+        video.read(&mut frame_img)?;
+        match img_qr_code_detect(&frame_img, padding)? {
+            Some(rect) => {
+                detect_frame = (rect, frame_num as i32);
+                break;
+            }
+            None => {
+                continue;
+            }
+        };
+    }
+    pb.finish_and_clear();
+    Ok(detect_frame)
+}
+
+// 指定された区間の動画のQRコードの置換
+fn video_qr_code_replace(
+    video: &mut videoio::VideoCapture,
+    url: &String,
+    output: &String,
+    rect: opencv::core::Rect,
+    start: i32,
+    end: i32,
+) -> Result<()> {
     let fourcc = video.get(videoio::CAP_PROP_FOURCC)? as i32;
     let frame_count = video.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
     let fps = video.get(videoio::CAP_PROP_FPS)?;
@@ -136,9 +207,13 @@ fn video_qr_code_replace(
         video.get(videoio::CAP_PROP_FRAME_WIDTH)? as i32,
         video.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32,
     );
-    let max_miss_count = fps as i32 / 2;
     let pb = ProgressBar::new(frame_count as u64);
-
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{prefix:.bold.dim} {msg} \n {bar} {pos:>4}/{len:4} "),
+    );
+    pb.set_prefix("[3/3]");
+    pb.set_message("QRコードの置換をしています...");
     // ファイル取得
     let mut replaced_video_list: Vec<videoio::VideoWriter> = Vec::new();
     let mut name_list: Vec<String> = Vec::new();
@@ -161,55 +236,19 @@ fn video_qr_code_replace(
             true,
         )?)
     }
-    let mut detected_future_frame_rect: VecDeque<opencv::core::Rect> = VecDeque::new();
-    let mut detected_rect: Option<opencv::core::Rect> = None;
     for i in 0..frame_count {
         let mut target_img = opencv::core::Mat::default();
         video.set(videoio::CAP_PROP_POS_FRAMES, i as f64)?;
         video.read(&mut target_img)?;
-        let replace_rect = if detected_future_frame_rect.is_empty() {
-            img_qr_code_detect(&target_img, padding)?
+        let replaced_img_list = if i >= start && i <= end {
+            img_qr_code_replace(target_img, url, rect)?
         } else {
-            detected_future_frame_rect.pop_front()
+            name_list
+                .clone()
+                .into_iter()
+                .map(|n| (n, target_img.clone()))
+                .collect()
         };
-        let replaced_img_list = match replace_rect {
-            Some(rect) => {
-                if detected_rect.is_none() {
-                    detected_rect = Some(rect)
-                };
-                img_qr_code_replace(target_img, url, detected_rect.unwrap())?
-            }
-            None => {
-                let mut found_rect: Option<opencv::core::Rect> = None;
-                for j in 0..max_miss_count {
-                    if i + j >= frame_count {
-                        break;
-                    }
-                    video.set(videoio::CAP_PROP_POS_FRAMES, (i + j) as f64)?;
-                    video.read(&mut target_img)?;
-                    found_rect = img_qr_code_detect(&target_img, padding)?;
-                    if found_rect.is_some() {
-                        for _l in 0..j + 1 {
-                            detected_future_frame_rect.push_back(found_rect.unwrap());
-                        }
-                        break;
-                    }
-                }
-                if found_rect.is_some() {
-                    if detected_rect.is_none() {
-                        detected_rect = found_rect;
-                    };
-                    img_qr_code_replace(target_img, url, detected_rect.unwrap())?
-                } else {
-                    name_list
-                        .clone()
-                        .into_iter()
-                        .map(|n| (n, target_img.clone()))
-                        .collect()
-                }
-            }
-        };
-
         let _: Result<()> = replaced_video_list
             .iter_mut()
             .zip(replaced_img_list.iter())
@@ -221,14 +260,7 @@ fn video_qr_code_replace(
         pb.inc(1);
     }
 
-    let end = start.elapsed();
     pb.finish_and_clear();
-    println!(
-        "Done ( {}.{:03} sec )",
-        end.as_secs(),
-        end.subsec_nanos() / 1_000_000
-    );
-
     Ok(())
 }
 
