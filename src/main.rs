@@ -122,7 +122,9 @@ fn main() -> Result<()> {
                 eprintln!("QRコードが検出できませんでした。");
                 std::process::exit(1)
             }
-            let replaced = img_qr_code_replace(target_img, url, qr_rect.unwrap())?;
+            let qr_size = opencv::core::Size::new(qr_rect.unwrap().width, qr_rect.unwrap().height);
+            let new_qr_list = qr_code_generate(url, qr_size)?;
+            let replaced = img_qr_code_replace(target_img, new_qr_list, qr_rect.unwrap())?;
             println!("{}", replaced.len());
             for x in replaced {
                 imgcodecs::imwrite(
@@ -214,22 +216,13 @@ fn video_qr_code_replace(
         )
         .with_prefix("[3/3]")
         .with_message("QRコードの置換をしています...");
+    let qr_size = opencv::core::Size::new(rect.width, rect.height);
+    let new_qr_list = qr_code_generate(url, qr_size)?;
     // ファイル取得
     let mut replaced_video_list: Vec<videoio::VideoWriter> = Vec::new();
-    let mut name_list: Vec<String> = Vec::new();
-    let f = File::open(url).unwrap();
-    let reader = BufReader::new(f);
-    for line in reader.lines() {
-        let line = line.unwrap().split(",").fold(Vec::new(), |mut s, i| {
-            s.push(i.to_string());
-            s
-        });
-        if line.is_empty() {
-            continue;
-        }
-        name_list.push(line[0].clone());
+    for qr in new_qr_list.iter() {
         replaced_video_list.push(videoio::VideoWriter::new(
-            &output.replace("#", &line[0]),
+            &output.replace("#", &qr.0),
             fourcc,
             fps,
             frame_size,
@@ -241,12 +234,12 @@ fn video_qr_code_replace(
         video.set(videoio::CAP_PROP_POS_FRAMES, i as f64)?;
         video.read(&mut target_img)?;
         let replaced_img_list = if i >= start && i <= end {
-            img_qr_code_replace(target_img, url, rect)?
+            img_qr_code_replace(target_img, new_qr_list.clone(), rect)?
         } else {
-            name_list
+            new_qr_list
                 .clone()
                 .into_iter()
-                .map(|n| (n, target_img.clone()))
+                .map(|n| (n.0, target_img.clone()))
                 .collect()
         };
         let _: Result<()> = replaced_video_list
@@ -298,13 +291,11 @@ fn img_qr_code_detect(
 // QRコード置換
 fn img_qr_code_replace(
     input: opencv::core::Mat,
-    url: &String,
+    new_qr_list: Vec<(String, opencv::core::Mat)>,
     rect: opencv::core::Rect,
 ) -> Result<Vec<(String, opencv::core::Mat)>> {
     // QRコードの置換
 
-    let qr_size = opencv::core::Size::new(rect.width, rect.height);
-    let new_qr_list = qr_code_generate(url, qr_size)?;
     let mat_list: Vec<opencv::core::Mat> = new_qr_list
         .iter()
         .map(|_| opencv::core::Mat::from(input.clone()))
