@@ -143,27 +143,27 @@ fn video_qr_code_detect(
     padding: i32,
     is_reverse: bool,
 ) -> Result<(opencv::core::Rect, i32)> {
-    let pb = ProgressBar::new_spinner();
+    let pb = ProgressBar::new_spinner()
+        .with_style(
+            ProgressStyle::default_spinner()
+                .template("{prefix:.bold.dim} {spinner} {msg}")
+                .tick_strings(&[
+                    "▹▹▹▹▹",
+                    "▸▹▹▹▹",
+                    "▹▸▹▹▹",
+                    "▹▹▸▹▹",
+                    "▹▹▹▸▹",
+                    "▹▹▹▹▸",
+                    "▪▪▪▪▪",
+                ]),
+        )
+        .with_prefix(format!("[{}/3]", is_reverse as i32 + 1))
+        .with_message(if is_reverse {
+            "QRコードの終了位置を検索しています..."
+        } else {
+            "QRコードの開始位置を検索しています..."
+        });
     pb.enable_steady_tick(120);
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{prefix:.bold.dim} {spinner} {msg}")
-            .tick_strings(&[
-                "▹▹▹▹▹",
-                "▸▹▹▹▹",
-                "▹▸▹▹▹",
-                "▹▹▸▹▹",
-                "▹▹▹▸▹",
-                "▹▹▹▹▸",
-                "▪▪▪▪▪",
-            ]),
-    );
-    pb.set_prefix(format!("[{}/3]", is_reverse as i32 + 1));
-    pb.set_message(if is_reverse {
-        "QRコードの終了位置を検索しています..."
-    } else {
-        "QRコードの開始位置を検索しています..."
-    });
 
     let frame_count = video.get(videoio::CAP_PROP_FRAME_COUNT)? as i32;
 
@@ -207,13 +207,13 @@ fn video_qr_code_replace(
         video.get(videoio::CAP_PROP_FRAME_WIDTH)? as i32,
         video.get(videoio::CAP_PROP_FRAME_HEIGHT)? as i32,
     );
-    let pb = ProgressBar::new(frame_count as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{prefix:.bold.dim} {msg} \n {bar} {pos:>4}/{len:4} "),
-    );
-    pb.set_prefix("[3/3]");
-    pb.set_message("QRコードの置換をしています...");
+    let pb = ProgressBar::new(frame_count as u64)
+        .with_style(
+            ProgressStyle::default_bar()
+                .template("{prefix:.bold.dim} {msg} \n {bar} {pos:>4}/{len:4} "),
+        )
+        .with_prefix("[3/3]")
+        .with_message("QRコードの置換をしています...");
     // ファイル取得
     let mut replaced_video_list: Vec<videoio::VideoWriter> = Vec::new();
     let mut name_list: Vec<String> = Vec::new();
